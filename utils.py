@@ -4,6 +4,8 @@ import requests
 import numpy as np
 from consts import SET100_TICKERS, LONG_TERM_GROWTH, RISK_FREE_RATE, MARKET_RETURN
 import concurrent.futures
+import time
+import random
 
 
 def load_tickers():
@@ -46,9 +48,15 @@ def get_stock_data(ticker_symbol):
         else:
             full_ticker = ticker_symbol
             
-        # Use custom session to avoid 401 errors (Standard Requests)
-        stock = yf.Ticker(full_ticker, session=get_yf_session())
+        # Use default yfinance session handling
+        # Add random sleep to prevent rate limiting
+        time.sleep(random.uniform(0.2, 1.0))
+        
+        stock = yf.Ticker(full_ticker)
         info = stock.info
+        
+        if info is None:
+             raise ValueError("yfinance returned None for info")
         
         # Helper to safely get float or np.nan
         def get_float(key):

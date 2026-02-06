@@ -62,6 +62,11 @@ def fetch_raw_market_data():
     """
     results = []
     
+    # Debug: Check tickers
+    if not SET100_TICKERS:
+        st.error("ไม่พบรายชื่อหุ้นใน tickers.json")
+        return []
+
     # Progress bar setup
     progress_text = "กำลังดึงข้อมูลหุ้น... โปรดรอสักครู่"
     my_bar = st.progress(0, text=progress_text)
@@ -99,9 +104,10 @@ def process_valuations(raw_data, rf, rm, g):
     return pd.DataFrame(results)
 
 # Load Pipeline
+# st.cache_data.clear() # Force clear cache for debugging (Removed for production)
 raw_data_list = fetch_raw_market_data()
 if not raw_data_list:
-    st.error("Failed to fetch data.")
+    st.error(f"Failed to fetch data. Tickers loaded: {len(SET100_TICKERS)}")
     st.stop()
 
 df = process_valuations(raw_data_list, st_rf, st_rm, st_g)
