@@ -20,6 +20,22 @@ def save_tickers(tickers):
     with open('tickers.json', 'w') as f:
         json.dump(tickers, f)
 
+# Helper for yfinance session (Standard Requests with User-Agent)
+def get_yf_session():
+    """
+    Creates a singleton session with browser headers to avoid 401 errors.
+    """
+    if not hasattr(get_yf_session, 'session'):
+        # Create a new session
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        get_yf_session.session = session
+    return get_yf_session.session
+
 def get_stock_data(ticker_symbol):
     """
     Fetches raw financial data for a single stock from yfinance.
@@ -30,7 +46,8 @@ def get_stock_data(ticker_symbol):
         else:
             full_ticker = ticker_symbol
             
-        stock = yf.Ticker(full_ticker)
+        # Use custom session to avoid 401 errors (Standard Requests)
+        stock = yf.Ticker(full_ticker, session=get_yf_session())
         info = stock.info
         
         # Helper to safely get float or np.nan
@@ -902,3 +919,150 @@ def get_shareholders(ticker_symbol):
     except Exception as e:
         print(f"Shareholder Error: {e}")
         return None, None
+
+# --- PHASE 3 FORENSIC & QUALITY ---
+def calculate_quality_metrics(ticker_symbol):
+    """
+    Calculates ROIC and GPM Stability.
+    """
+    try:
+        stock = yf.Ticker(ticker_symbol if ticker_symbol.endswith('.BK') else f"{ticker_symbol}.BK", session=get_yf_session())
+        # Use session to ensure data fetch? Standard ticker is fine usually now.
+        fin = stock.financials
+        bs = stock.balance_sheet
+        
+        if fin.empty or bs.empty:
+            return None
+            
+        # Transpose for easier time-series access
+        fin_T = fin.T.sort_index(ascending=True) # Oldest to Newest
+        bs_T = bs.T.sort_index(ascending=True)
+        
+        results = {}
+        
+        # 1. ROIC (Return on Invested Capital)
+        # NOPAT = EBIT * (1 - Tax Rate)
+        if 'EBIT' in fin_T.columns and 'Invested Capital' in bs_T.columns:
+            latest_date = fin_T.index[-1]
+            if latest_date in bs_T.index:
+                ebit = fin_T.loc[latest_date, 'EBIT']
+                # Tax Rate: Try to find, else 20%
+                tax_rate = 0.20
+                if 'Tax Rate For Calcs' in fin_T.columns:
+                    val = fin_T.loc[latest_date, 'Tax Rate For Calcs']
+                    if not pd.isna(val) and val != 0: tax_rate = val
+                
+                invested_cap = bs_T.loc[latest_date, 'Invested Capital']
+                
+                if pd.isna(invested_cap) or invested_cap == 0:
+                    # Fallback
+                    eq = bs_T.loc[latest_date, 'Stockholders Equity'] if 'Stockholders Equity' in bs_T.columns else 0
+                    debt = bs_T.loc[latest_date, 'Total Debt'] if 'Total Debt' in bs_T.columns else 0
+                    cash = bs_T.loc[latest_date, 'Cash And Cash Equivalents'] if 'Cash And Cash Equivalents' in bs_T.columns else 0
+                    invested_cap = eq + debt - cash
+                
+                if invested_cap > 0:
+                    nopat = ebit * (1 - tax_rate)
+                    results['ROIC'] = nopat / invested_cap
+        
+        # 2. GPM Stability
+        if 'Gross Profit' in fin_T.columns and 'Total Revenue' in fin_T.columns:
+            margins = fin_T['Gross Profit'] / fin_T['Total Revenue']
+            results['GPM_Stability'] = margins.std()
+            results['GPM_Trend'] = margins.tolist()
+            
+        return results
+        
+    except Exception as e:
+        print(f"Quality Metrics Error {ticker_symbol}: {e}")
+        return None
+
+def calculate_forensic_metrics(ticker_symbol):
+    """
+    Calculates Beneish M-Score and Sloan Ratio.
+    """
+    try:
+        stock = yf.Ticker(ticker_symbol if ticker_symbol.endswith('.BK') else f"{ticker_symbol}.BK", session=get_yf_session())
+        fin = stock.financials
+        bs = stock.balance_sheet
+        cf = stock.cashflow
+        
+        if fin.empty or bs.empty:
+            return None
+            
+        fin_T = fin.T.sort_index(ascending=True) 
+        bs_T = bs.T.sort_index(ascending=True)
+        cf_T = cf.T.sort_index(ascending=True)
+        
+        if len(fin_T) < 2: return None
+            
+        t = fin_T.index[-1]
+        t_1 = fin_T.index[-2]
+        
+        def g(df, dt, col, default=0.0):
+            if col not in df.columns or dt not in df.index: return default
+            val = df.loc[dt, col]
+            return float(val) if not pd.isna(val) else default
+
+        # M-Score Vars
+        # DSRI
+        rec_t = g(bs_T, t, 'Receivables') + g(bs_T, t, 'Accounts Receivable') 
+        rec_t1 = g(bs_T, t_1, 'Receivables') + g(bs_T, t_1, 'Accounts Receivable')
+        rev_t = g(fin_T, t, 'Total Revenue')
+        rev_t1 = g(fin_T, t_1, 'Total Revenue')
+        dsri = (rec_t / rev_t) / (rec_t1 / rev_t1) if rec_t1 > 0 and rev_t > 0 else 1.0
+        
+        # GMI
+        gp_t = g(fin_T, t, 'Gross Profit')
+        gp_t1 = g(fin_T, t_1, 'Gross Profit')
+        gm_t = gp_t / rev_t if rev_t > 0 else 0
+        gm_t1 = gp_t1 / rev_t1 if rev_t1 > 0 else 0
+        gmi = gm_t1 / gm_t if gm_t > 0 else 1.0
+        
+        # AQI
+        ta_t = g(bs_T, t, 'Total Assets')
+        ta_t1 = g(bs_T, t_1, 'Total Assets')
+        ca_t = g(bs_T, t, 'Current Assets')
+        ca_t1 = g(bs_T, t_1, 'Current Assets')
+        ppe_t = g(bs_T, t, 'Net PPE')
+        ppe_t1 = g(bs_T, t_1, 'Net PPE')
+        aq_t = (1 - (ca_t + ppe_t)/ta_t) if ta_t > 0 else 0
+        aq_t1 = (1 - (ca_t1 + ppe_t1)/ta_t1) if ta_t1 > 0 else 0
+        aqi = aq_t / aq_t1 if aq_t1 > 0 else 1.0
+        
+        # SGI
+        sgi = rev_t / rev_t1 if rev_t1 > 0 else 1.0
+        
+        # DEPI
+        dep_t = g(cf_T, t, 'Depreciation')
+        dep_t1 = g(cf_T, t_1, 'Depreciation')
+        depr_t = dep_t / (ppe_t + dep_t) if (ppe_t + dep_t) > 0 else 0
+        depr_t1 = dep_t1 / (ppe_t1 + dep_t1) if (ppe_t1 + dep_t1) > 0 else 0
+        depi = depr_t1 / depr_t if depr_t > 0 else 1.0
+        
+        # SGAI
+        sga_t = g(fin_T, t, 'Selling General And Administration')
+        sga_t1 = g(fin_T, t_1, 'Selling General And Administration')
+        sgai = (sga_t/rev_t) / (sga_t1/rev_t1) if rev_t > 0 and rev_t1 > 0 and sga_t1 > 0 else 1.0
+        
+        # LVGI
+        lev_t = (g(bs_T, t, 'Current Liabilities') + g(bs_T, t, 'Long Term Debt')) / ta_t if ta_t > 0 else 0
+        lev_t1 = (g(bs_T, t_1, 'Current Liabilities') + g(bs_T, t_1, 'Long Term Debt')) / ta_t1 if ta_t1 > 0 else 0
+        lvgi = lev_t / lev_t1 if lev_t1 > 0 else 1.0
+        
+        # TATA
+        ni_t = g(fin_T, t, 'Net Income')
+        cfo_t = g(cf_T, t, 'Operating Cash Flow')
+        tata = (ni_t - cfo_t) / ta_t if ta_t > 0 else 0
+        
+        m_score = -4.84 + 0.92*dsri + 0.528*gmi + 0.404*aqi + 0.892*sgi + 0.115*depi - 0.172*sgai + 4.679*tata - 0.327*lvgi
+        sloan = (ni_t - cfo_t) / ta_t # Simple Accruals
+        
+        return {
+            'M_Score': m_score,
+            'Sloan_Ratio': sloan,
+            'Details': {'DSRI': dsri, 'GMI': gmi, 'AQI': aqi, 'SGI': sgi, 'DEPI': depi, 'SGAI': sgai, 'LVGI': lvgi, 'TATA': tata}
+        }
+    except Exception as e:
+        print(f"Forensic Calc Error {ticker_symbol}: {e}")
+        return None

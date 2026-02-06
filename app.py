@@ -679,10 +679,10 @@ elif page == "วิเคราะห์หุ้นรายตัว":
                 st.info("ℹ️ **หมายเหตุข้อมูล:** ข้อมูลย้อนหลังประมาณ 4 ปีล่าสุด | ตัวเลขคาดการณ์อ้างอิงจากบทวิเคราะห์ (Analyst Estimates)")
                 
                 # Tabs for different views
-                tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+                tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
                     "📊 การเติบโต", "💪 ประสิทธิภาพ", "🔮 คาดการณ์", "📉 PE Band",
                     "💎 Dupont Analysis", "💰 Earnings Quality", "📅 รายไตรมาส",
-                    "⚔️ คู่แข่ง", "🧮 ประเมินมูลค่า", "🕵️ ผู้ถือหุ้น"
+                    "⚔️ คู่แข่ง", "🧮 ประเมินมูลค่า", "🕵️ ผู้ถือหุ้น", "🕵️‍♂️ Jea Luk Forensic"
                 ])
                 
                 # General Check for History because Tab 1-4 rely on it
@@ -961,6 +961,86 @@ elif page == "วิเคราะห์หุ้นรายตัว":
                             st.dataframe(inst_holders)
                         else:
                             st.info("ไม่พบข้อมูลการถือครองของสถาบัน (อาจเป็นหุ้นขนาดเล็ก)")
+
+                with tab11:
+                    st.subheader("🕵️‍♂️ เจาะลึกคุณภาพ & จับผิดงบ (Forensic & Quality)")
+                    
+                    with st.spinner("กำลังวิเคราะห์ความผิดปกติของงบการเงิน..."):
+                        qual_metrics = utils.calculate_quality_metrics(selected_ticker)
+                        forensic_metrics = utils.calculate_forensic_metrics(selected_ticker)
+                    
+                    if qual_metrics:
+                        st.markdown("##### 💎 คุณภาพการเติบโต (Quality Factors)")
+                        q1, q2 = st.columns(2)
+                        with q1:
+                            # ROIC
+                            roic = qual_metrics.get('ROIC', 0)
+                            st.metric("ROIC (ผลตอบแทนเงินลงทุน)", f"{roic*100:.2f}%", help="EBIT * (1-Tax) / Invested Capital. ยิ่งสูงกว่า WACC ยิ่งดี (ควร > 10-15%)")
+                        with q2:
+                            # GPM Stability
+                            gpm_stab = qual_metrics.get('GPM_Stability', 0)
+                            st.metric("GPM Stability (ความนิ่งกำไรขั้นต้น)", f"{gpm_stab*100:.2f}%", help="SD ของ GPM 5 ปีย้อนหลัง. ยิ่งต่ำยิ่งดี (แสดงถึงอำนาจต่อรอง)")
+                            
+                        # Chart GPM Trend
+                        if 'GPM_Trend' in qual_metrics:
+                            st.caption("แนวโน้มอัตรากำไรขั้นต้น (GPM Trend)")
+                            st.line_chart(qual_metrics['GPM_Trend'])
+
+                    st.markdown("---")
+                    
+                    if forensic_metrics:
+                        st.markdown("##### 🚨 จับผิดงบการเงิน (Forensic Analysis)")
+                        f1, f2 = st.columns(2)
+                        with f1:
+                            # M-Score
+                            m_score = forensic_metrics.get('M_Score', -99)
+                            m_msg = "Safe"
+                            delta_col = "normal"
+                            
+                            if m_score > -1.78:
+                                m_msg = "High Risk (Likely Manipulated)"
+                                delta_col = "inverse" # Red
+                            elif m_score > -2.22:
+                                m_msg = "Grey Area (Caution)"
+                                delta_col = "off" # Grey
+                            else:
+                                m_msg = "Safe (Unlikely)"
+                                delta_col = "normal" # Green (interpret inverted manually)
+                            
+                            # Streamlit delta color 'inverse' means Red for positive delta? 
+                            # Actually let's just use text
+                            st.metric("Beneish M-Score", f"{m_score:.2f}", delta=m_msg, delta_color="inverse" if m_score > -2.22 else "normal")
+                            st.caption("*ค่า > -1.78 มีความเสี่ยงตกแต่งบัญชีสูง*")
+
+                        with f2:
+                            # Sloan Ratio
+                            sloan = forensic_metrics.get('Sloan_Ratio', 0)
+                            s_msg = "Safe"
+                            s_col = "normal"
+                            if abs(sloan) > 0.25:
+                                s_msg = "Poor Quality (High Accruals)"
+                                s_col = "inverse"
+                            elif abs(sloan) > 0.10:
+                                s_msg = "Moderate"
+                                s_col = "off"
+                            
+                            st.metric("Sloan Ratio (Accruals)", f"{sloan:.2%}", delta=s_msg, delta_color="inverse" if abs(sloan)>0.1 else "normal")
+                            st.caption("*ช่วงปลอดภัย -10% ถึง +10%. ถ้าสูงแปลว่ากำไรไม่ได้มาจากเงินสด*")
+                            
+                        with st.expander("รายละเอียดตัวแปร M-Score (Breakdown)"):
+                            st.json(forensic_metrics.get('Details', {}))
+                            st.markdown("""
+                            *   **DSRI (Days Sales in Receivables):** ลูกหนี้โตเร็วกว่ายอดขาย? (>1 ไม่ดี)
+                            *   **GMI (Gross Margin):** กำไรขั้นต้นแย่ลง? (>1 ไม่ดี)
+                            *   **AQI (Asset Quality):** สินทรัพย์ไม่มีตัวตนเพิ่มขึ้น? (>1 ไม่ดี)
+                            *   **SGI (Sales Growth):** ยอดขายโตเร็วผิดปกติ? (>1 น่าสงสัย)
+                            *   **DEPI (Depreciation):** ตัดค่าเสื่อมช้าลงเพื่อดันกำไร? (>1 ไม่ดี)
+                            *   **SGAI (SG&A):** ค่าใช้จ่ายขายบริหารเพิ่มขึ้น? (>1 ไม่ดี)
+                            *   **LVGI (Leverage):** หนี้สินเพิ่มขึ้น? (>1 ไม่ดี)
+                            *   **TATA (Total Accruals):** รายการคงค้างเทียบสินทรัพย์
+                            """)
+                    else:
+                        st.warning("ข้อมูลไม่เพียงพอสำหรับคำนวณ Forensic Metrics (ต้องใช้งบย้อนหลังอย่างน้อย 2 ปี)")
 
                 # --- 8 Qualities Checklist (Enhanced) ---
                 st.markdown("---")

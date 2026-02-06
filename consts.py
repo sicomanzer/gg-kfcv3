@@ -9,7 +9,7 @@ SET100_TICKERS = [
     "AMATA", "BAM", "BANPU", "BCP", "BEC", "BLA", "BPP", "DOHOME", "ESSO", "FORTH",
     "GUNKUL", "HANA", "JMART", "JMT", "KEX", "MAJOR", "MEGA", "ONEE", "PSL",
     "PTG", "RCL", "SINGER", "SPRC", "STARK", "STEC", "SYNEX", "TASCO", "THANI",
-    "TIPH", "TQM", "VGI", "WHAUP"
+    "TIPH", "TQM", "VGI", "WHAUP", "TACC"
 ]
 
 # Constants for Valuation
